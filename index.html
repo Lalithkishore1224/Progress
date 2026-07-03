@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -243,6 +243,16 @@ button svg.lucide{width:14px;height:14px;stroke-width:2;margin-top:0}
 .cb2{display:grid;place-items:center;line-height:1}
 .cb2 svg.lucide{width:11px;height:11px;stroke-width:3;color:var(--panel);display:none}
 .item.done .cb2 svg.lucide{display:block}
+
+/* Cloud sync controls */
+.cloud-sync{display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--line);background:var(--panel);padding:10px 12px;margin:0 0 12px}
+.cloud-copy{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;font-weight:600;min-width:210px}.cloud-copy svg.lucide{width:14px;height:14px}
+.cloud-controls{display:flex;align-items:center;gap:8px;flex:1;justify-content:flex-end}.cloud-controls input{width:min(420px,100%);height:34px;border:1px solid var(--line);background:var(--panel-soft);color:var(--ink);padding:0 10px;font:500 12px 'Poppins',sans-serif;outline:none}.cloud-controls input:focus{border-color:var(--line-strong)}.cloud-controls button{height:34px;border:1px solid var(--line-strong);background:transparent;color:var(--ink);padding:0 10px;font:600 12px 'Poppins',sans-serif;display:inline-flex;align-items:center;gap:7px;cursor:pointer}.cloud-controls button:hover{background:var(--ink);color:var(--panel)}.cloud-controls button svg.lucide{width:13px;height:13px}
+@media(max-width:700px){.cloud-sync{display:block}.cloud-controls{margin-top:10px;display:grid;grid-template-columns:1fr auto;justify-content:stretch}.cloud-copy{min-width:0}}
+
+/* Cloud refresh affordance */
+.cloud-controls button{white-space:nowrap}.cloud-controls button svg.lucide{width:13px;height:13px}
+@media(max-width:700px){.cloud-controls{grid-template-columns:1fr 1fr}.cloud-controls input{grid-column:1 / -1;width:100%}}
 </style>
 </head>
 <body>
@@ -269,6 +279,14 @@ button svg.lucide{width:14px;height:14px;stroke-width:2;margin-top:0}
         <div class="bar-meta"><span id="globalTxt">0 / 0 done</span><span id="globalPct">0%</span></div>
       </div>
       <div class="streak-row" id="streakRow"></div>
+    </div>
+    <div class="cloud-sync">
+      <div class="cloud-copy"><i data-lucide="cloud"></i><span id="cloudStatus">Cloud sync not connected</span></div>
+      <div class="cloud-controls">
+        <input id="cloudUrl" type="url" placeholder="Apps Script web app URL">
+        <button type="button" onclick="connectCloudSync()"><i data-lucide="plug"></i><span>Connect</span></button>
+        <button type="button" onclick="refreshCloudSync()" title="Fetch latest cloud progress"><i data-lucide="refresh-cw"></i><span>Refresh</span></button>
+      </div>
     </div>
     <div class="stats-row" id="statsRow"></div>
   </section>
@@ -709,8 +727,55 @@ function resolveLink(t,g,item){
 
 const TOTAL=TRACKS.reduce((a,t)=>a+t.groups.reduce((b,g)=>b+g.items.length,0),0);
 let state={},dailyLog={};
+const CLOUD_SPREADSHEET_ID='1PUQzX5oQvWHPGxCsEYHc-W67PrdaJE5uzm_jTaWVmvg';
+let cloudApiUrl=localStorage.getItem('cer_cloud_api_url')||'https://script.google.com/macros/s/AKfycbx0wOF4TseP5kuGn2IoGGuEaajfWXMTHel9xvw8JvkzS1NcvjSAWuudNEqxoLh_r9Y/exec';
+let cloudSaveTimer=null, cloudReady=false;
 try{state=JSON.parse(localStorage.getItem('cer6_s')||'{}')}catch(e){}
 try{dailyLog=JSON.parse(localStorage.getItem('cer6_d')||'{}')}catch(e){}
+function setCloudStatus(msg){const el=document.getElementById('cloudStatus');if(el)el.textContent=msg}
+function initCloudControls(){const input=document.getElementById('cloudUrl');if(input)input.value=cloudApiUrl;if(cloudApiUrl){setCloudStatus('Connecting to cloud...');loadCloudProgress()}else setCloudStatus('Cloud sync not connected')}
+async function connectCloudSync(){const input=document.getElementById('cloudUrl');cloudApiUrl=(input&&input.value.trim())||'';if(!cloudApiUrl){localStorage.removeItem('cer_cloud_api_url');cloudReady=false;setCloudStatus('Cloud sync not connected');return}localStorage.setItem('cer_cloud_api_url',cloudApiUrl);setCloudStatus('Connecting to cloud...');await loadCloudProgress()}
+async function refreshCloudSync(){if(!cloudApiUrl){setCloudStatus('Cloud sync not connected');return}setCloudStatus('Refreshing from cloud...');await loadCloudProgress(true)}
+function cloudJsonp(params){
+  return new Promise((resolve,reject)=>{
+    if(!cloudApiUrl)return reject(new Error('Cloud sync not connected'));
+    const cb='cloudCb_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+    const script=document.createElement('script');
+    const url=new URL(cloudApiUrl);
+    Object.entries(params||{}).forEach(([k,v])=>url.searchParams.set(k,v));
+    url.searchParams.set('callback',cb);
+    url.searchParams.set('_',Date.now());
+    const timer=setTimeout(()=>{cleanup();reject(new Error('Cloud request timed out'))},15000);
+    function cleanup(){clearTimeout(timer);delete window[cb];script.remove()}
+    window[cb]=(data)=>{cleanup();resolve(data)};
+    script.onerror=()=>{cleanup();reject(new Error('Cloud script failed to load'))};
+    script.src=url.toString();
+    document.body.appendChild(script);
+  });
+}
+async function loadCloudProgress(manual=false){
+  if(!cloudApiUrl)return;
+  try{
+    const data=await cloudJsonp({action:'list'});
+    if(Array.isArray(data.items)){
+      data.items.forEach(row=>{if(row.item_key)state[row.item_key]=row.done===true||row.done==='TRUE'||row.done==='true'});
+      save();cloudReady=true;setCloudStatus(manual?'Cloud refreshed from Sheet':'Cloud synced from Sheet');updateAll();
+      document.querySelectorAll('.item').forEach(el=>{const key=el.id&&el.id.slice(2);if(key)el.classList.toggle('done',!!state[key])});
+    }else throw new Error(data.error||'Bad cloud response')
+  }catch(e){cloudReady=false;setCloudStatus('Cloud sync error: '+e.message)}
+}
+function queueCloudSave(itemKey, done){if(!cloudApiUrl)return;clearTimeout(cloudSaveTimer);cloudSaveTimer=setTimeout(()=>saveCloudProgress([{item_key:itemKey,done:!!done}]),350)}
+async function saveCloudProgress(updates){
+  if(!cloudApiUrl||!updates.length)return;
+  try{
+    setCloudStatus('Saving to cloud...');
+    for(const update of updates){
+      const data=await cloudJsonp({action:'update',item_key:update.item_key,done:update.done?'TRUE':'FALSE'});
+      if(!data.ok)throw new Error(data.error||'Cloud save failed');
+    }
+    cloudReady=true;setCloudStatus('Saved to cloud')
+  }catch(e){cloudReady=false;setCloudStatus('Cloud save error: '+e.message)}
+}
 function todayKey(){const d=new Date();return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate()}
 function save(){try{localStorage.setItem('cer6_s',JSON.stringify(state));localStorage.setItem('cer6_d',JSON.stringify(dailyLog))}catch(e){}}
 function ikey(tid,gi,ii){return tid+'|'+gi+'|'+ii}
@@ -722,7 +787,7 @@ function toggle(tid,gi,ii){
   state[k]=!was;
   const dk=todayKey();
   dailyLog[dk]=Math.max(0,(dailyLog[dk]||0)+(was?-1:1));
-  save();document.getElementById('i_'+k)&&document.getElementById('i_'+k).classList.toggle('done',state[k]);updateAll();
+  save();queueCloudSave(k,state[k]);document.getElementById('i_'+k)&&document.getElementById('i_'+k).classList.toggle('done',state[k]);updateAll();
 }
 let dc=null,tc=null;
 function updateAll(){
@@ -793,7 +858,7 @@ function exportData(){
   lines.push('--- DAILY LOG ---');Object.keys(dailyLog).sort().forEach(d=>lines.push(d+': '+dailyLog[d]+' tasks'));
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain'}));a.download='engineer_roadmap_progress.txt';a.click();
 }
-buildUI();updateAll();if(window.lucide)lucide.createIcons();
+buildUI();updateAll();initCloudControls();if(window.lucide)lucide.createIcons();
 </script>
 </body>
 </html>
