@@ -1,0 +1,14 @@
+{
+  "name": "Servelless Verify",
+  "image": "node:22",
+  "forwardPorts": [
+    3000
+  ],
+  "portsAttributes": {
+    "3000": {
+      "label": "App",
+      "onAutoForward": "notify"
+    }
+  },
+  "postCreateCommand": "bash -c 'if [ -f package.json ]; then npm install --no-fund --no-audit >/dev/null 2>&1 || true; fi; bash .devcontainer/servelless-start.sh'"
+}
